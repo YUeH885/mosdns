@@ -27,6 +27,8 @@ import (
 
 const PluginType = "drop_resp"
 
+var droppedMark = query_context.RegKey()
+
 func init() {
 	sequence.MustRegExecQuickSetup(PluginType, QuickSetup)
 }
@@ -41,5 +43,16 @@ func QuickSetup(_ sequence.BQ, _ string) (any, error) {
 
 func (b *DropResp) Exec(_ context.Context, qCtx *query_context.Context) error {
 	qCtx.SetResponse(nil)
+	qCtx.SetMark(droppedMark)
 	return nil
+}
+
+// IsDropped 返回当前响应是否被 drop_resp 丢弃。
+func IsDropped(qCtx *query_context.Context) bool {
+	return qCtx.HasMark(droppedMark)
+}
+
+// ClearDropped 清除之前留下的 drop_resp 标记。
+func ClearDropped(qCtx *query_context.Context) {
+	qCtx.DeleteMark(droppedMark)
 }

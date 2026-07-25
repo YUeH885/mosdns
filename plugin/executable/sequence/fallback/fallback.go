@@ -28,8 +28,9 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	dropresp "github.com/IrineSistiana/mosdns/v5/plugin/executable/drop_resp"
+	routecache "github.com/IrineSistiana/mosdns/v5/plugin/executable/route_cache"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
-	"github.com/miekg/dns"
 	"go.uber.org/zap"
 )
 
@@ -108,12 +109,18 @@ func (f *fallback) Exec(ctx context.Context, qCtx *query_context.Context) error 
 }
 
 func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) error {
-	respChan := make(chan *dns.Msg, 2) // resp could be nil.
-	primFailed := make(chan struct{})
+	type result struct {
+		qCtx       *query_context.Context
+		cacheRoute bool
+	}
+
+	respChan := make(chan result, 2)
+	primFailed := make(chan bool, 1)
 	primDone := make(chan struct{})
 
 	// primary goroutine.
 	qCtxP := qCtx.Copy()
+	dropresp.ClearDropped(qCtxP)
 	go func() {
 		qCtx := qCtxP
 		ctx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
@@ -125,11 +132,11 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 
 		r := qCtx.R()
 		if err != nil || r == nil {
-			close(primFailed)
-			respChan <- nil
+			primFailed <- err == nil && dropresp.IsDropped(qCtx)
+			respChan <- result{}
 		} else {
+			respChan <- result{qCtx: qCtx, cacheRoute: true}
 			close(primDone)
-			respChan <- r
 		}
 	}()
 
@@ -138,11 +145,12 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 	go func() {
 		timer := pool.GetTimer(f.fastFallbackDuration)
 		defer pool.ReleaseTimer(timer)
+		cacheRoute := false
 		if !f.alwaysStandby { // not always standby, wait here.
 			select {
 			case <-primDone: // primary is done, no need to exec this.
 				return
-			case <-primFailed: // primary failed
+			case cacheRoute = <-primFailed: // primary failed
 			case <-timer.C: // timed out
 			}
 		}
@@ -153,7 +161,7 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 		err := f.secondary.Exec(ctx, qCtx)
 		if err != nil {
 			f.logger.Warn("secondary error", qCtx.InfoField(), zap.Error(err))
-			respChan <- nil
+			respChan <- result{}
 			return
 		}
 
@@ -163,22 +171,26 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 			select {
 			case <-ctx.Done():
 			case <-primDone:
-			case <-primFailed: // only send secondary result when primary is failed.
+				return
+			case cacheRoute = <-primFailed: // only cache when primary response was dropped.
 			case <-timer.C: // or timed out.
 			}
 		}
-		respChan <- r
+		respChan <- result{qCtx: qCtx, cacheRoute: cacheRoute}
 	}()
 
 	for i := 0; i < 2; i++ {
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
-		case r := <-respChan:
-			if r == nil { // One of goroutines finished but failed.
+		case result := <-respChan:
+			if result.qCtx == nil || result.qCtx.R() == nil { // One of goroutines finished but failed.
 				continue
 			}
-			qCtx.SetResponse(r)
+			qCtx.SetResponse(result.qCtx.R())
+			if result.cacheRoute {
+				routecache.SetUpstream(qCtx, routecache.GetUpstream(result.qCtx))
+			}
 			return nil
 		}
 	}

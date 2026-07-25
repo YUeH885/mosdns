@@ -33,6 +33,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/pkg/upstream"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
+	routecache "github.com/IrineSistiana/mosdns/v5/plugin/executable/route_cache"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
@@ -205,6 +206,7 @@ func (f *Forward) Exec(ctx context.Context, qCtx *query_context.Context) (err er
 		return err
 	}
 	qCtx.SetResponse(r)
+	routecache.SetUpstream(qCtx, f)
 	return nil
 }
 
@@ -222,12 +224,14 @@ func (f *Forward) QuickConfigureExec(args string) (any, error) {
 			us = append(us, u)
 		}
 	}
-	var execFunc sequence.ExecutableFunc = func(ctx context.Context, qCtx *query_context.Context) error {
+	var execFunc sequence.ExecutableFunc
+	execFunc = func(ctx context.Context, qCtx *query_context.Context) error {
 		r, err := f.exchange(ctx, qCtx, us)
 		if err != nil {
 			return err
 		}
 		qCtx.SetResponse(r)
+		routecache.SetUpstream(qCtx, execFunc)
 		return nil
 	}
 	return execFunc, nil

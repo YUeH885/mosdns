@@ -98,6 +98,13 @@ func (c *Cache[K, V]) Get(key K) (v V, expirationTime time.Time, ok bool) {
 	return
 }
 
+// CompareAndDel 仅在缓存项的过期时间未变化时删除该项。
+func (c *Cache[K, V]) CompareAndDel(key K, expirationTime time.Time) {
+	c.m.TestAndSet(key, func(e *elem[V], ok bool) (*elem[V], bool, bool) {
+		return nil, false, ok && e.expirationTime == expirationTime
+	})
+}
+
 // Range calls f through all entries. If f returns an error, the same error will be returned
 // by Range.
 func (c *Cache[K, V]) Range(f func(key K, v V, expirationTime time.Time) error) error {

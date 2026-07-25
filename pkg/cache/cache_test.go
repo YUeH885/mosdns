@@ -58,6 +58,28 @@ func Test_Cache(t *testing.T) {
 	}
 }
 
+func TestCacheCompareAndDel(t *testing.T) {
+	c := New[testKey, int](Opts{Size: 1024})
+	defer c.Close()
+
+	key := testKey(1)
+	oldExpiration := time.Now().Add(time.Minute)
+	c.Store(key, 1, oldExpiration)
+	_, token, _ := c.Get(key)
+
+	newExpiration := oldExpiration.Add(time.Second)
+	c.Store(key, 2, newExpiration)
+	c.CompareAndDel(key, token)
+	if v, _, ok := c.Get(key); !ok || v != 2 {
+		t.Fatal("replacement was deleted")
+	}
+
+	c.CompareAndDel(key, newExpiration)
+	if _, _, ok := c.Get(key); ok {
+		t.Fatal("matching entry was not deleted")
+	}
+}
+
 func Test_memCache_cleaner(t *testing.T) {
 	c := New[testKey, int](Opts{
 		Size:            1024,
