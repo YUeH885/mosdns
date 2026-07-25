@@ -48,12 +48,13 @@ func init() {
 
 const (
 	maxConcurrentQueries = 3
-	queryTimeout         = time.Second * 5
+	defaultQueryTimeout  = time.Second * 5
 )
 
 type Args struct {
 	Upstreams  []UpstreamConfig `yaml:"upstreams"`
 	Concurrent int              `yaml:"concurrent"`
+	Timeout    int              `yaml:"timeout"`
 
 	// Global options.
 	Socks5       string `yaml:"socks5"`
@@ -104,6 +105,7 @@ type Forward struct {
 	logger       *zap.Logger
 	us           []*upstreamWrapper
 	tag2Upstream map[string]*upstreamWrapper // for fast tag lookup only.
+	queryTimeout time.Duration
 }
 
 type Opts struct {
@@ -125,6 +127,10 @@ func NewForward(args *Args, opt Opts) (*Forward, error) {
 		args:         args,
 		logger:       opt.Logger,
 		tag2Upstream: make(map[string]*upstreamWrapper),
+		queryTimeout: time.Duration(args.Timeout) * time.Millisecond,
+	}
+	if f.queryTimeout <= 0 {
+		f.queryTimeout = defaultQueryTimeout
 	}
 
 	applyGlobal := func(c *UpstreamConfig) {
@@ -269,7 +275,7 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, us 
 		go func(uqid uint32, question dns.Question) {
 			defer pool.ReleaseBuf(qc)
 			// Give each upstream a fixed timeout to finish the query.
-			upstreamCtx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+			upstreamCtx, cancel := context.WithTimeout(context.Background(), f.queryTimeout)
 			defer cancel()
 
 			var r *dns.Msg
